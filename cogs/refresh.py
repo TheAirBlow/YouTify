@@ -15,7 +15,7 @@ class RefreshCog(commands.Cog):
     async def refresh(self, interaction: discord.Interaction) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
 
         await interaction.response.send_message(
             embed=success_embed(

@@ -13,6 +13,7 @@ class AuthCog(commands.Cog):
 
     @app_commands.command(name="auth", description="Authenticate your Google account")
     async def auth(self, interaction: discord.Interaction) -> None:
+        self.bot.db.ensure_user(interaction.user.id)
         session = await self.bot.auth_service.begin_auth(interaction)
         view = AuthPromptView(
             self.bot.auth_service,

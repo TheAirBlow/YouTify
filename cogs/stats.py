@@ -94,7 +94,7 @@ class StatsCog(commands.Cog):
 
     @app_commands.command(name="me", description="Current settings, your own tracking statistics and job status")
     async def user_stats(self, interaction: discord.Interaction) -> None:
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
         channels, playlists = self.bot.db.count_user_objects(interaction.user.id)
         settings = self.bot.db.get_user_settings(interaction.user.id)
         auth_record = self.bot.db.get_auth_record(interaction.user.id)

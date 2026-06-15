@@ -115,27 +115,18 @@ class Database:
             except Exception:
                 cursor.execute("ALTER TABLE users ADD COLUMN priority_job TEXT")
 
-    def ensure_user(self, user_id: int, guild_id: int | None = None) -> None:
+    def ensure_user(self, user_id: int) -> None:
         now = utc_now()
         with self.cursor() as cursor:
             cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
             exists = cursor.fetchone() is not None
-            if exists:
+            if not exists:
                 cursor.execute(
                     """
-                    UPDATE users
-                    SET guild_id = COALESCE(?, guild_id), updated_at=?
-                    WHERE user_id=?
+                    INSERT INTO users (user_id, notify_channel_id, notify_dms, catchup_enabled, is_whitelisted, created_at, updated_at)
+                    VALUES (?, NULL, 0, 0, 0, ?, ?)
                     """,
-                    (guild_id, now, user_id),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO users (user_id, guild_id, notify_channel_id, notify_dms, catchup_enabled, is_whitelisted, created_at, updated_at)
-                    VALUES (?, ?, NULL, 0, 0, 0, ?, ?)
-                    """,
-                    (user_id, guild_id, now, now),
+                    (user_id, now, now),
                 )
 
     def get_user_settings(self, user_id: int) -> UserSettings | None:
@@ -158,7 +149,7 @@ class Database:
         )
 
     def set_notify_target(self, user_id: int, guild_id: int | None, channel_id: int | None, dms: bool) -> None:
-        self.ensure_user(user_id, guild_id)
+        self.ensure_user(user_id)
         now = utc_now()
         with self.cursor() as cursor:
             cursor.execute(

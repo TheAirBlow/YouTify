@@ -16,7 +16,7 @@ class CatchupCog(commands.Cog):
         if not await require_notification_target(interaction, self.bot):
             return
 
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
 
         await interaction.response.defer(ephemeral=True)
         self.bot.db.set_catchup(interaction.user.id, enabled)

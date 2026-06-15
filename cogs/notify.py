@@ -12,7 +12,7 @@ class NotifyCog(commands.Cog):
 
     @app_commands.command(name="notify", description="Set your notification target")
     async def notify(self, interaction: discord.Interaction, channel: discord.TextChannel | None, dms: bool | None) -> None:
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
         if dms:
             self.bot.db.set_notify_target(interaction.user.id, interaction.guild_id, None, True)
             await interaction.response.send_message(embed=success_embed("DM notifications enabled", "I will now DM you when updates are available."), ephemeral=True)
@@ -37,7 +37,8 @@ class NotifyCog(commands.Cog):
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(embed=error_embed("Missing permission", "You need the Manage Channels permission to use a channel notification target."), ephemeral=True)
             return
-        self.bot.db.set_notify_target(interaction.user.id, interaction.guild_id, channel.id, False)
+
+        self.bot.db.set_notify_target(interaction.user.id, channel.guild.id, channel.id, False)
         await interaction.response.send_message(embed=success_embed("Notification target updated", f"I will now use {channel.mention} for your notifications."), ephemeral=True)
 
 

@@ -18,7 +18,7 @@ class PlaylistCog(commands.GroupCog, name="playlist"):
         if not await require_notification_target(interaction, self.bot):
             return
 
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
         await interaction.response.defer(ephemeral=True)
 
         playlist_id = parse_playlist_identifier(playlist)
@@ -40,7 +40,7 @@ class PlaylistCog(commands.GroupCog, name="playlist"):
     async def remove(self, interaction: discord.Interaction, playlist: str) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
 
         playlist_id = parse_playlist_identifier(playlist)
         current = self.bot.db.get_playlist(interaction.user.id, playlist_id)
@@ -70,7 +70,7 @@ class PlaylistCog(commands.GroupCog, name="playlist"):
     async def list(self, interaction: discord.Interaction) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
 
         total_playlists = self.bot.db.count_playlists(interaction.user.id)
         if total_playlists == 0:

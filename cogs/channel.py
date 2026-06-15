@@ -19,7 +19,7 @@ class ChannelCog(commands.GroupCog, name="channel"):
         if not await require_notification_target(interaction, self.bot):
             return
 
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
         channel_id = parse_channel_identifier(channel)
         current = self.bot.db.get_channel(interaction.user.id, channel_id)
         if current and "user" in current.trackers:
@@ -47,7 +47,7 @@ class ChannelCog(commands.GroupCog, name="channel"):
     async def remove(self, interaction: discord.Interaction, channel: str) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
 
         channel_id = parse_channel_identifier(channel)
         current = self.bot.db.get_channel(interaction.user.id, channel_id)
@@ -74,7 +74,7 @@ class ChannelCog(commands.GroupCog, name="channel"):
     async def blacklist(self, interaction: discord.Interaction, channel: str) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
 
         channel_id = parse_channel_identifier(channel)
         current = self.bot.db.get_channel(interaction.user.id, channel_id)
@@ -100,7 +100,7 @@ class ChannelCog(commands.GroupCog, name="channel"):
             return
 
         await interaction.response.defer(ephemeral=True)
-        self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
+        self.bot.db.ensure_user(interaction.user.id)
 
         filter_name = filter.value if filter else "all"
         total_channels = self.bot.db.count_channels(interaction.user.id, filter_name)
