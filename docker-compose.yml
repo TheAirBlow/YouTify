@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  youtify:
+    build: .
+    container_name: youtify-bot
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./credentials.json:/app/credentials.json:ro
+      - ./youtify.db:/app/youtify.db
+      - ./logs:/app/logs
+    environment:
+      TZ: "UTC"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
