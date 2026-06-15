@@ -20,7 +20,7 @@ class RefreshCog(commands.Cog):
         await interaction.response.send_message(
             embed=success_embed(
                 "Refresh scheduled",
-                "Your playlists and channels will be scraped soon. Check `/stats me` for progress."
+                "Your playlists and channels will be scraped soon. Check `/me` for progress."
             ),
             ephemeral=True
         )

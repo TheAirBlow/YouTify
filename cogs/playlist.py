@@ -43,7 +43,7 @@ class PlaylistCog(commands.GroupCog, name="playlist"):
         self.bot.db.ensure_user(interaction.user.id, interaction.guild_id)
 
         playlist_id = parse_playlist_identifier(playlist)
-        current = await self.bot.db.fetch_playlist(interaction.user.id, playlist_id)
+        current = self.bot.db.get_playlist(interaction.user.id, playlist_id)
         if not current:
             await interaction.response.send_message(embed=warning_embed("Playlist missing", "That playlist is not tracked by you."), ephemeral=True)
             return

@@ -15,6 +15,7 @@ class Database:
         self.path = str(path)
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON")
         self.initialize()
 
     @property
@@ -243,10 +244,11 @@ class Database:
 
     def delete_user(self, user_id: int) -> None:
         with self.cursor() as cursor:
-            cursor.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+            cursor.execute("DELETE FROM channel_trackers WHERE user_id=?", (user_id,))
             cursor.execute("DELETE FROM channels WHERE user_id=?", (user_id,))
             cursor.execute("DELETE FROM playlists WHERE user_id=?", (user_id,))
             cursor.execute("DELETE FROM auth_records WHERE user_id=?", (user_id,))
+            cursor.execute("DELETE FROM users WHERE user_id=?", (user_id,))
 
     def get_channel(self, user_id: int, channel_id: str) -> ChannelRecord | None:
         with self.cursor() as cursor:
@@ -372,7 +374,12 @@ class Database:
                 ON CONFLICT(user_id, channel_id) DO UPDATE SET
                     title=excluded.title,
                     blacklisted=excluded.blacklisted,
-                    last_seen_ts=COALESCE(excluded.last_seen_ts, channels.last_seen_ts),
+                    last_seen_ts=CASE 
+                        WHEN excluded.last_seen_ts IS NULL THEN channels.last_seen_ts
+                        WHEN channels.last_seen_ts IS NULL THEN excluded.last_seen_ts
+                        WHEN excluded.last_seen_ts > channels.last_seen_ts THEN excluded.last_seen_ts
+                        ELSE channels.last_seen_ts
+                    END,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -681,17 +688,16 @@ class Database:
             cursor.execute(
                 """
                 DELETE FROM channel_trackers
-                WHERE user_id=? AND tracker_id=?
+                WHERE user_id = ? AND tracker_id = ?
                 """,
                 (user_id, playlist_id),
             )
-
             removed_count = cursor.rowcount
 
             cursor.execute(
                 """
                 DELETE FROM playlists
-                WHERE user_id=? AND playlist_id=?
+                WHERE user_id = ? AND playlist_id = ?
                 """,
                 (user_id, playlist_id),
             )
@@ -699,15 +705,15 @@ class Database:
             cursor.execute(
                 """
                 DELETE FROM channels
-                WHERE user_id=?
-                  AND blacklisted=0
-                  AND NOT EXISTS (
-                      SELECT 1 FROM channel_trackers t
-                      WHERE t.user_id = channels.user_id
-                        AND t.channel_id = channels.channel_id
-                  )
+                WHERE user_id = ? 
+                    AND blacklisted = 0
+                    AND channel_id NOT IN (
+                        SELECT channel_id 
+                        FROM channel_trackers 
+                        WHERE user_id = ?
+                    )
                 """,
-                (user_id,),
+                (user_id, user_id),
             )
 
         return removed_count

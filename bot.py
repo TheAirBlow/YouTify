@@ -207,7 +207,9 @@ class YoutifyBot(commands.Bot):
             nonlocal completed_count
             async with semaphore:
                 if channel.last_seen_ts is None:
-                    self.logger.warning("Skipping channel %s (%s) since last seen is null!", channel.title, channel.channel_id)
+                    channel.last_seen_ts = utc_now()
+                    self.db.upsert_channel(user_id, channel.channel_id, channel.title, last_seen_ts=channel.last_seen_ts)
+                    self.logger.debug("Skipping channel %s (%s) since last seen is null", channel.title, channel.channel_id)
                 else:
                     result = await self.youtube.fetch_latest_channel_videos(
                         channel.channel_id,
@@ -217,7 +219,6 @@ class YoutifyBot(commands.Bot):
                     if result is None:
                         self.logger.debug("Failed to fetch channel videos for %s", channel.channel_id)
                     else:
-                        newest = channel.last_seen_ts
                         title, videos = result
 
                         async for video in videos:
@@ -232,8 +233,8 @@ class YoutifyBot(commands.Bot):
                                 )
 
                                 await self.send_video_notification(user_id, video)
-                            if newest is None or self.youtube._is_newer(video.published_at, channel.last_seen_ts):
-                                self.db.upsert_channel(user_id, channel.channel_id, title, last_seen_ts=newest)
+                            if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
+                                self.db.upsert_channel(user_id, channel.channel_id, title, last_seen_ts=video.published_at)
 
                         self.logger.debug("Processed videos from channel %s", channel.channel_id)
 

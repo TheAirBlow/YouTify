@@ -130,7 +130,7 @@ class ChannelCog(commands.GroupCog, name="channel"):
                 if record.tracked_by_playlist:
                     status.append("📚")
                 status_text = " ".join(status) if status else "✓"
-                rows.append(f"[{record.title}](https://www.youtube.com/channel/{record.channel_id}) {status_text}")
+                rows.append(f"{status_text} [{record.title}](https://www.youtube.com/channel/{record.channel_id})")
 
             embed = make_embed(f"Channels ({page_index + 1}/{total_pages})", color=Palette.INFO)
             embed.description = "\n".join(rows)
