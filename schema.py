@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from sqlalchemy.orm import selectinload, sessionmaker
+from sqlalchemy.exc import IntegrityError
 
 from models import *
 from utils import utc_now
@@ -332,17 +333,23 @@ class Database:
             ).all()
             existing_tracker_set = set(existing_trackers)
 
-            new_trackers = [
-                ChannelTracker(
-                    user_id=user_id,
-                    channel_id=cid,
-                    tracker_id=playlist_id,
-                    created_at=now
-                )
-                for cid in channel_ids if cid not in existing_tracker_set
-            ]
-            if new_trackers:
-                session.add_all(new_trackers)
+            for cid in channel_ids:
+                if cid in existing_tracker_set:
+                    continue
+
+                with session.begin_nested():
+                    tracker = ChannelTracker(
+                        user_id=user_id,
+                        channel_id=cid,
+                        tracker_id=playlist_id,
+                        created_at=now
+                    )
+                    session.add(tracker)
+
+                    try:
+                        session.flush()
+                    except IntegrityError:
+                        pass
 
     def set_channel_blacklisted(self, user_id: int, channel_id: str, title: str, blacklisted: bool) -> Channel:
         return self.upsert_channel(user_id, channel_id, title, blacklisted=blacklisted)
