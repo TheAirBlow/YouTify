@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import selectinload, sessionmaker
 from sqlalchemy.exc import IntegrityError
 
@@ -248,25 +250,47 @@ class Database:
                 session.add(channel)
 
             if trackers:
-                incoming_trackers = set(t for t in trackers if t)
-
-                for tid in incoming_trackers:
-                    with session.begin_nested():
-                        tracker = ChannelTracker(
-                            user_id=user_id,
-                            channel_id=channel_id,
-                            tracker_id=tid,
-                            created_at=now,
-                        )
-                        session.add(tracker)
-
-                        try:
-                            session.flush()
-                        except IntegrityError:
-                            session.rollback()
-                            pass
+                self.sync_trackers(session, user_id, {channel_id}, set(trackers))
 
             return channel
+
+    def _sync_trackers(self, session, user_id: int, channel_ids: set[str], tracker_id: str):
+        existing_data = session.execute(
+            select(ChannelTracker.channel_id)
+            .where(
+                ChannelTracker.user_id == user_id,
+                ChannelTracker.tracker_id == tracker_id,
+                ChannelTracker.channel_id.in_(channel_ids)
+            )
+        ).scalars().all()
+
+        existing_channel_ids = set(existing_data)
+        to_add = channel_ids - existing_channel_ids
+
+        if not to_add:
+            return
+
+        dialect = session.bind.dialect.name
+        now = utc_now()
+
+        if dialect in ("postgresql", "sqlite"):
+            insert_stmt = (pg_insert if dialect == "postgresql" else sqlite_insert)(ChannelTracker)
+            stmt = insert_stmt.values([
+                {"user_id": user_id, "channel_id": cid, "tracker_id": tracker_id, "created_at": now}
+                for cid in to_add
+            ]).on_conflict_do_nothing(index_elements=['user_id', 'channel_id', 'tracker_id'])
+            session.execute(stmt)
+        else:
+            for cid in to_add:
+                with self.cursor() as session:
+                    try:
+                        session.add(ChannelTracker(
+                            user_id=user_id, channel_id=cid, tracker_id=tracker_id, created_at=now
+                        ))
+                        session.commit()
+                    except IntegrityError:
+                        session.rollback()
+                        continue
 
     def upsert_playlist_channels(
         self,
@@ -325,33 +349,8 @@ class Database:
                 session.add_all(new_channels)
                 session.flush()
 
-            existing_trackers = session.scalars(
-                select(ChannelTracker.channel_id).where(
-                    ChannelTracker.user_id == user_id,
-                    ChannelTracker.tracker_id == playlist_id,
-                    ChannelTracker.channel_id.in_(channel_ids)
-                )
-            ).all()
-            existing_tracker_set = set(existing_trackers)
-
-            for cid in channel_ids:
-                if cid in existing_tracker_set:
-                    continue
-
-                with session.begin_nested():
-                    tracker = ChannelTracker(
-                        user_id=user_id,
-                        channel_id=cid,
-                        tracker_id=playlist_id,
-                        created_at=now
-                    )
-                    session.add(tracker)
-
-                    try:
-                        session.flush()
-                    except IntegrityError:
-                        session.rollback()
-                        pass
+            channel_ids = {c.channel_id for c in channels}
+            self._sync_trackers(session, user_id, channel_ids, playlist_id)
 
     def set_channel_blacklisted(self, user_id: int, channel_id: str, title: str, blacklisted: bool) -> Channel:
         return self.upsert_channel(user_id, channel_id, title, blacklisted=blacklisted)
@@ -485,8 +484,7 @@ class Database:
     def remove_playlist(self, user_id: int, playlist_id: str) -> int:
         with self.cursor() as session:
             tracker_result = session.execute(
-                delete(ChannelTracker).where(ChannelTracker.user_id == user_id,
-                                             ChannelTracker.tracker_id == playlist_id)
+                delete(ChannelTracker).where(ChannelTracker.user_id == user_id, ChannelTracker.tracker_id == playlist_id)
             )
 
             session.execute(delete(Playlist).where(Playlist.user_id == user_id, Playlist.playlist_id == playlist_id))
