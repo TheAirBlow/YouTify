@@ -17,7 +17,7 @@ from config import BotConfig
 from models import Video, Channel
 from schema import Database
 from services.auth import GoogleAuthService
-from services.youtube import YouTubeService
+from services.youtube import YouTubeService, YouTubeAPIError
 from services.presence import PresenceRotator
 from services.workers import UserTaskManager
 from ui.embeds import error_embed

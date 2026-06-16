@@ -163,7 +163,7 @@ class UserTaskManager:
                         self._handle_quota_exceeded()
                         continue
                     except Exception as e:
-                        self.bot.logger.error("Unexpected worker error caught: %s", e.message)
+                        self.bot.logger.error("Unexpected worker error caught: %s", e, exc_info=True)
                     self._clear_progress(user_id)
 
                     next_playlist_run = loop.time() + playlist_interval
@@ -178,7 +178,7 @@ class UserTaskManager:
                         self._handle_quota_exceeded()
                         continue
                     except Exception as e:
-                        self.bot.logger.error("Unexpected worker error caught: %s", e.message)
+                        self.bot.logger.error("Unexpected worker error caught: %s", e, exc_info=True)
                     self._clear_progress(user_id)
 
                     next_latest_run = loop.time() + latest_interval
