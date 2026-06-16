@@ -248,14 +248,21 @@ class Database:
 
             if trackers:
                 incoming_trackers = set(t for t in trackers if t)
-                existing_trackers = {t.tracker_id for t in channel.trackers} if channel.trackers else set()
 
-                new_trackers = [
-                    ChannelTracker(user_id=user_id, channel_id=channel_id, tracker_id=tid, created_at=now)
-                    for tid in incoming_trackers if tid not in existing_trackers
-                ]
-                if new_trackers:
-                    session.add_all(new_trackers)
+                for tid in incoming_trackers:
+                    with session.begin_nested():
+                        tracker = ChannelTracker(
+                            user_id=user_id,
+                            channel_id=channel_id,
+                            tracker_id=tid,
+                            created_at=now,
+                        )
+                        session.add(tracker)
+
+                        try:
+                            session.flush()
+                        except IntegrityError:
+                            pass
 
             return channel
 
