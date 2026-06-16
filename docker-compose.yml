@@ -1,25 +1,23 @@
 services:
+  db:
+    image: postgres:17-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: youtify
+      POSTGRES_PASSWORD: your_strong_password
+      POSTGRES_DB: youtify
+    volumes:
+      - ./data:/var/lib/postgresql/data
   youtify:
     build: .
     container_name: youtify-bot
     restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: "postgresql+psycopg://youtify:your_strong_password@db:5432/youtify"
+      TZ: "UTC"
     volumes:
       - ./config.json:/app/config.json:ro
       - ./credentials.json:/app/credentials.json:ro
-      - ./youtify.db:/app/youtify.db
       - ./logs:/app/logs
-    environment:
-      TZ: "UTC"
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"

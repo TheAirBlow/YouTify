@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,7 @@ class BotConfig:
     bot_token: str = ""
     client_secrets_file: str = "credentials.json"
     youtube_api_key: str | None = None
-    db_path: str = "youtify.sqlite3"
+    database_url: str = "sqlite:///youtify.db"
     guild_id: int | None = None
     proxy: str | None = None
     listen_address: str | None = None
@@ -21,7 +22,6 @@ class BotConfig:
     scrape_playlists_interval: int = 3600
     check_rss_interval: int = 900
     web_presence_interval: int = 300
-    youtube_api_base: str = "https://www.googleapis.com/youtube/v3"
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -33,9 +33,16 @@ class BotConfig:
                 data = json.loads(config_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError as e:
                 raise RuntimeError(f"Failed to parse {config_path}: {e}") from e
+
         known_fields = {field.name for field in cls.__dataclass_fields__.values()}
         kwargs = {k: v for k, v in data.items() if k in known_fields}
         extra = {k: v for k, v in data.items() if k not in known_fields}
+
+        # TODO: maybe make so all config options could be overridden by env variables?
+        env_url = os.environ.get("DATABASE_URL")
+        if env_url:
+            kwargs["database_url"] = env_url
+
         cfg = cls(**kwargs)
         cfg.extra = extra
         return cfg
@@ -45,7 +52,7 @@ class BotConfig:
             "bot_token": "YOUR_DISCORD_BOT_TOKEN",
             "client_secrets_file": self.client_secrets_file,
             "youtube_api_key": self.youtube_api_key,
-            "db_path": self.db_path,
+            "database_url": "sqlite:///youtify.db",
             "guild_id": self.guild_id,
             "proxy": self.proxy,
             "listen_address": "127.0.0.1:8080",

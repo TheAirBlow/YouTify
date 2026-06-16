@@ -14,13 +14,13 @@ import discord
 from discord.ext import commands
 
 from config import BotConfig
-from models import VideoRecord
+from models import Video, Channel
 from schema import Database
 from services.auth import GoogleAuthService
 from services.youtube import YouTubeService
 from services.presence import PresenceRotator
 from services.workers import UserTaskManager
-from embeds import error_embed
+from ui.embeds import error_embed
 from utils import async_batched, utc_now
 
 ProgressCallback = Callable[[str, str, int, int], None]
@@ -33,7 +33,7 @@ class YoutifyBot(commands.Bot):
 
         self.config = config
         self.logger = logging.getLogger("youtify")
-        self.db = Database(config.db_path)
+        self.db = Database(config.database_url)
         self.session: Any = None
         self.youtube = YouTubeService(self)
         self.workers = UserTaskManager(self)
@@ -62,7 +62,9 @@ class YoutifyBot(commands.Bot):
     async def setup_hook(self) -> None:
         self.session = aiohttp.ClientSession(trust_env=bool(self.config.proxy))
         self.tree.interaction_check = self.interaction_check
+        self.loop.create_task(self._sync_commands())
 
+        self.logger.info("Setting up extension cogs")
         await self.load_extension("cogs.channel")
         await self.load_extension("cogs.playlist")
         await self.load_extension("cogs.catchup")
@@ -74,17 +76,26 @@ class YoutifyBot(commands.Bot):
         if self.config.whitelist:
             await self.load_extension("cogs.whitelist")
 
+        self.logger.info("Starting auth service and presence")
         await self.auth_service.start()
         self.presence.start()
-        if self.config.guild_id is not None:
-            guild = discord.Object(id=int(self.config.guild_id))
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
 
+        self.logger.info("Starting user worker jobs")
         for user in self.db.list_users():
             await self.workers.start_user(user.user_id)
+
+    async def _sync_commands(self) -> None:
+        self.logger.info("Syncing slash commands with discord")
+        try:
+            if self.config.guild_id is not None:
+                guild = discord.Object(id=int(self.config.guild_id))
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            else:
+                await self.tree.sync()
+            self.logger.info("Slash commands synced successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to sync slash commands: {e}")
 
     async def on_ready(self) -> None:
         self.logger.info("Logged in as %s", self.user)
@@ -111,48 +122,58 @@ class YoutifyBot(commands.Bot):
             await super().close()
 
     @staticmethod
-    def _build_video_notification(video: VideoRecord) -> str:
+    def _build_video_notification(video: Video) -> str:
         dt = datetime.fromisoformat(video.published_at)
         unix_ts = int(dt.timestamp())
         return f"{video.url}\n<t:{unix_ts}:F>, <t:{unix_ts}:R>"
 
-    async def send_video_notification(self, user_id: int, video: VideoRecord) -> bool:
-        settings = self.db.get_user_settings(user_id)
-        if not settings or (not settings.notify_channel_id and not settings.notify_dms):
-            self.logger.debug("No notification target configured for user_id=%s", user_id)
+    async def send_video_notification(self, user_id: int, video: Video) -> bool:
+        user = self.db.ensure_user(user_id)
+        if not user.notify_channel_id and not user.notify_dms:
+            self.logger.debug("No notification target configured for user %s", user_id)
             return False
 
         content = self._build_video_notification(video)
         try:
-            if settings.notify_dms:
+            if user.notify_dms:
                 user = await self.fetch_user(user_id)
                 await user.send(content=content)
-                self.logger.debug("Sent DM notification for user_id=%s, video_id=%s", user_id, video.video_id)
+                self.logger.debug("Sent DM notification to user %s for video %s", user_id, video.video_id)
                 return True
-            elif settings.notify_channel_id:
-                channel = self.get_channel(settings.notify_channel_id)
-                if channel is None:
-                    self.logger.warning("Notification channel not found: channel_id=%s", settings.notify_channel_id)
+            elif user.notify_channel_id:
+                guild = bot.get_guild(user.notify_guild_id)
+                if guild is None:
+                    self.logger.warning(
+                        "Guild %s for user %s not found",
+                        user.notify_channel_id, user.notify_guild_id, user.user_id)
                     return False
+
+                channel = guild.get_channel(user.notify_channel_id)
+                if channel is None:
+                    self.logger.warning(
+                        "Notification channel %s in guild %s for user %s not found",
+                        user.notify_channel_id, user.notify_guild_id, user.user_id)
+                    return False
+
                 await channel.send(content=content)
-                self.logger.debug("Sent channel notification for user_id=%s, channel_id=%s, video_id=%s",
-                                user_id, settings.notify_channel_id, video.video_id)
+                self.logger.debug("Sent channel notification for user %s in channel %s guild %s for video %s",
+                                user_id, user.notify_channel_id, user.notify_guild_id, video.video_id)
                 return True
         except discord.DiscordException as e:
-            self.logger.error(f"Failed to send notification for user_id={user_id}, video_id={video.video_id}: {e}")
+            self.logger.error(f"Failed to send notification for user {user_id} video {video.video_id}: {e}")
             return False
         return False
 
     async def sync_user_playlists(self, user_id: int, progress: ProgressCallback | None = None) -> None:
         total = self.db.count_playlists(user_id)
         if total == 0:
-            self.logger.debug("No playlists found for user_id=%s", user_id)
+            self.logger.debug("No playlists found for user %s", user_id)
             return
 
-        self.logger.debug("Syncing %d playlist(s) for user_id=%s (concurrency_limit=%d)", total, user_id, self.config.concurrency_limit)
-        settings = self.db.get_user_settings(user_id)
+        self.logger.debug("Syncing %d playlists for user %s (concurrency limit: %d)", total, user_id, self.config.concurrency_limit)
+        user = self.db.ensure_user(user_id)
         playlists = self.db.list_playlists(user_id)
-        catchup = settings and settings.catchup_enabled
+        catchup = user.catchup_enabled
         cutoff = utc_now()
 
         semaphore = asyncio.Semaphore(self.config.concurrency_limit)
@@ -164,21 +185,26 @@ class YoutifyBot(commands.Bot):
                 metadata = await self.youtube.fetch_playlist(user_id, playlist.playlist_id)
                 if not metadata.can_access:
                     self.logger.debug("Unable to access playlist %s by user %s", playlist.playlist_id, user_id)
+                    self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=False)
                 else:
                     if metadata.title and metadata.title != playlist.title:
-                        self.logger.debug("Playlist title updated for user_id=%s: %s (was %s)", user_id, metadata.title, playlist.title)
-                        self.db.upsert_playlist(user_id, playlist.playlist_id, metadata.title, is_private=playlist.is_private)
+                        self.db.upsert_playlist(user_id, playlist.playlist_id, metadata.title, can_access=True)
+                    elif not playlist.can_access:
+                        self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=True)
 
                     feed = self.youtube.fetch_playlist_items(user_id, playlist.playlist_id)
 
                     async for batch in async_batched(feed, 100):
-                        channels: dict[str, str] = {}
+                        channel_ids: list[Channel] = []
                         last_seen: dict[str, str] = {}
+
                         for video in batch:
-                            channels[video.channel_id] = video.channel_title
+                            channel_ids.append(video.channel_id)
                             if catchup and (video.channel_id not in last_seen or self.youtube._is_at_or_newer(video.added_at, last_seen[video.channel_id])):
                                 last_seen[video.channel_id] = video.added_at
                                 continue
+
+                        channels = await self.youtube.fetch_channels(user_id, channel_ids)
                         self.db.upsert_playlist_channels(user_id, playlist.playlist_id, channels, last_seen if catchup else None)
 
                     self.db.remove_orphaned_playlist_channels(user_id, playlist.playlist_id, cutoff)
@@ -194,10 +220,10 @@ class YoutifyBot(commands.Bot):
     async def scrape_latest_videos(self, user_id: int, progress: ProgressCallback | None = None) -> None:
         total = self.db.count_channels(user_id, "tracked")
         if total == 0:
-            self.logger.debug("No tracked channels found for user_id=%s", user_id)
+            self.logger.debug("No tracked channels found for user %s", user_id)
             return
 
-        self.logger.debug("Scraping %d channel(s) for user_id=%s (concurrency_limit=%d)", total, user_id, self.config.concurrency_limit)
+        self.logger.debug("Scraping %d channels for user %s (concurrency limit: %d)", total, user_id, self.config.concurrency_limit)
         channels = self.db.list_channels(user_id, "tracked")
 
         semaphore = asyncio.Semaphore(self.config.concurrency_limit)
@@ -211,32 +237,32 @@ class YoutifyBot(commands.Bot):
                     self.db.upsert_channel(user_id, channel.channel_id, channel.title, last_seen_ts=channel.last_seen_ts)
                     self.logger.debug("Skipping channel %s (%s) since last seen is null", channel.title, channel.channel_id)
                 else:
-                    result = await self.youtube.fetch_latest_channel_videos(
-                        channel.channel_id,
-                        after=channel.last_seen_ts,
-                    )
+                    try:
+                        result = await self.youtube.fetch_channel_videos(channel, after=channel.last_seen_ts)
+                    except YouTubeAPIError as e:
+                        if e.status == 404 or e.reason in ("channelNotFound", "resourceNotFound"):
+                            await self.bot.db.remove_channel(user_id, channel.channel_id)
+                            return
+                        raise
 
-                    if result is None:
-                        self.logger.debug("Failed to fetch channel videos for %s", channel.channel_id)
-                    else:
-                        title, videos = result
+                    title, videos = result
 
-                        async for video in videos:
-                            if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
-                                self.logger.debug(
-                                    "Found a new video '%s' (%s) by %s (%s) for user %s",
-                                    video.title,
-                                    video.url,
-                                    channel.title,
-                                    channel.channel_id,
-                                    user_id
-                                )
+                    async for video in videos:
+                        if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
+                            self.logger.debug(
+                                "Found a new video '%s' (%s) by %s (%s) for user %s",
+                                video.title,
+                                video.url,
+                                channel.title,
+                                channel.channel_id,
+                                user_id
+                            )
 
-                                await self.send_video_notification(user_id, video)
-                            if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
-                                self.db.upsert_channel(user_id, channel.channel_id, title, last_seen_ts=video.published_at)
+                            await self.send_video_notification(user_id, video)
+                        if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
+                            self.db.upsert_channel(user_id, channel.channel_id, title, last_seen_ts=video.published_at)
 
-                        self.logger.debug("Processed videos from channel %s", channel.channel_id)
+                    self.logger.debug("Processed videos from channel %s", channel.channel_id)
 
                 completed_count += 1
                 if progress:

@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from embeds import error_embed, success_embed, info_embed, make_embed
+from ui.embeds import error_embed, success_embed, info_embed, make_embed
 from constants import Palette
 from services.utils import require_notification_target
 

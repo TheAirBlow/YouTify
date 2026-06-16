@@ -1,6 +1,9 @@
 # YouTify
 YouTify is a Discord bot for tracking YouTube channels and playlists to receive notifications about new videos.
 
+## Disclaimer
+This bot is intended for personal use, or for a small group of friends. I didn't bother implementing a lot obvious of performance and API usage optimizations.
+
 ## Features
 - Tracks channels and playlists per Discord user.
 - Supports catch-up mode to stay up to date about what you missed when you weren't using this bot.

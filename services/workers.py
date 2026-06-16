@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from services.youtube import YouTubeQuotaExceeded, YouTubeAPIError
 
 if TYPE_CHECKING:
     from bot import YoutifyBot
@@ -30,6 +34,7 @@ class UserWorkerState:
 class UserTaskManager:
     def __init__(self, bot: YoutifyBot):
         self.bot = bot
+        self.ratelimited: bool = False
         self._workers: dict[int, UserWorkerState] = {}
 
     def has_worker(self, user_id: int) -> bool:
@@ -100,6 +105,32 @@ class UserTaskManager:
 
         return _set
 
+    @staticmethod
+    def _seconds_until_youtube_quota_reset() -> float:
+        pacific_tz = ZoneInfo("America/Los_Angeles")
+        now_pacific = datetime.now(pacific_tz)
+
+        midnight_pacific = (now_pacific + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+        time_remaining = (midnight_pacific - now_pacific).total_seconds()
+        return max(0.0, time_remaining)
+
+    async def _wait_for_quota_reset(self, cooldown: float) -> None:
+        await asyncio.sleep(cooldown)
+        self.ratelimited = False
+        self.bot.logger.info("YouTube API quota reset, resuming jobs.")
+
+    def _handle_quota_exceeded(self) -> None:
+        if self.ratelimited:
+            return
+
+        self.ratelimited = True
+        cooldown = _seconds_until_youtube_quota_reset()
+        self.bot.logger.critical("YouTube API quota exceeded, resuming in %d seconds.", int(cooldown))
+        asyncio.create_task(self._wait_for_quota_reset(cooldown))
+
     async def _run_user(self, user_id: int, stop_event: asyncio.Event) -> None:
         playlist_interval = max(60, int(self.bot.config.scrape_playlists_interval))
         latest_interval = max(60, int(self.bot.config.check_rss_interval))
@@ -108,6 +139,10 @@ class UserTaskManager:
         next_playlist_run, next_latest_run, priority_job = self.bot.db.get_worker_schedule(user_id)
 
         while not stop_event.is_set():
+            if self.ratelimited:
+                await asyncio.sleep(60)
+                continue
+
             try:
                 now = loop.time()
                 due_playlist = now >= next_playlist_run
@@ -121,33 +156,34 @@ class UserTaskManager:
                         continue
                     continue
 
-                if priority_job == "full-refresh":
-                    await self.bot.sync_user_playlists(user_id, progress=self._progress_callback(user_id))
-                    self._clear_progress(user_id)
-                    await self.bot.scrape_latest_videos(user_id, progress=self._progress_callback(user_id))
-                    self._clear_progress(user_id)
-
-                    next_playlist_run = loop.time() + playlist_interval
-                    next_latest_run = loop.time() + latest_interval
-                    priority_job = None
-                    self.bot.db.set_worker_schedule(user_id, next_playlist_run=next_playlist_run, next_latest_run=next_latest_run, priority_job=priority_job)
-                    continue
-
-                if due_playlist:
-                    await self.bot.sync_user_playlists(user_id, progress=self._progress_callback(user_id))
+                if due_playlist or priority_job == "full-refresh":
+                    try:
+                        await self.bot.sync_user_playlists(user_id, progress=self._progress_callback(user_id))
+                    except YouTubeQuotaExceeded:
+                        self._handle_quota_exceeded()
+                        continue
+                    except YouTubeAPIError as e:
+                        self.bot.logger.error("Unexpected YouTube API error caught: %s", e.message)
                     self._clear_progress(user_id)
 
                     next_playlist_run = loop.time() + playlist_interval
-                    priority_job = None
-                    self.bot.db.set_worker_schedule(user_id, next_playlist_run=next_playlist_run, priority_job=priority_job)
-                    continue
+                    self.bot.db.set_worker_schedule(user_id, next_playlist_run=next_playlist_run)
+                    if priority_job != "full-refresh":
+                        continue
 
-                if due_latest:
-                    await self.bot.scrape_latest_videos(user_id, progress=self._progress_callback(user_id))
+                if due_latest or priority_job == "full-refresh":
+                    try:
+                        await self.bot.scrape_latest_videos(user_id, progress=self._progress_callback(user_id))
+                    except YouTubeQuotaExceeded:
+                        self._handle_quota_exceeded()
+                        continue
+                    except YouTubeAPIError as e:
+                        self.bot.logger.error("Unexpected YouTube API error caught: %s", e.message)
                     self._clear_progress(user_id)
 
                     next_latest_run = loop.time() + latest_interval
-                    self.bot.db.set_worker_schedule(user_id, next_latest_run=next_latest_run)
+                    priority_job = None
+                    self.bot.db.set_worker_schedule(user_id, next_latest_run=next_latest_run, priority_job=priority_job)
                     continue
             except asyncio.CancelledError:
                 raise

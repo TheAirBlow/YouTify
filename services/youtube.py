@@ -10,20 +10,51 @@ from typing import Any
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
-from models import VideoRecord
+from models import Video, Channel
 from utils import utc_now
 
 YOUTUBE_CHANNEL_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 YOUTUBE_PLAYLIST_FEED = "https://www.youtube.com/feeds/videos.xml?playlist_id={playlist_id}"
-YOUTUBE_API_SEARCH = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_API_PLAYLISTS = "https://www.googleapis.com/youtube/v3/playlists"
 YOUTUBE_API_PLAYLIST_ITEMS = "https://www.googleapis.com/youtube/v3/playlistItems"
+YOUTUBE_API_CHANNELS = "https://www.googleapis.com/youtube/v3/channels"
 
 NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "yt": "http://www.youtube.com/xml/schemas/2015",
     "media": "http://search.yahoo.com/mrss/",
 }
+
+class YouTubeAPIError(Exception):
+    def __init__(self, status: int, reason: str, message: str):
+        self.status = status
+        self.reason = reason
+        self.message = message
+        super().__init__(f"YouTube API Error {status} [{reason}]: {message}")
+
+    @classmethod
+    async def from_response(cls, response: aiohttp.ClientResponse, fallback_message: str = "API request failed") -> YouTubeAPIError:
+        status = response.status
+        reason = "unknown_reason"
+        message = fallback_message
+
+        try:
+            error_data = await response.json()
+            if "error" in error_data:
+                err_detail = error_data["error"]
+                message = err_detail.get("message", message)
+                if "errors" in err_detail and len(err_detail["errors"]) > 0:
+                    reason = err_detail["errors"][0].get("reason", reason)
+        except Exception:
+            pass
+
+        if reason in ("quotaExceeded", "dailyLimitExceeded"):
+            return YouTubeQuotaExceeded(status, reason, message)
+
+        return cls(status, reason, message)
+
+class YouTubeQuotaExceeded(YouTubeAPIError):
+    pass
 
 @dataclass(slots=True)
 class Playlist:
@@ -95,11 +126,11 @@ class YouTubeService:
 
         async with self.bot.session.get(YOUTUBE_API_PLAYLISTS, params=params, headers=headers, proxy=self.bot.config.proxy) as response:
             if response.status != 200:
-                return Playlist(False, source)
+                raise await YouTubeAPIError.from_response(response, f"Failed to fetch playlist {playlist_id}")
             try:
                 data = await response.json()
             except (ValueError, json.JSONDecodeError):
-                return Playlist(False, source)
+                raise YouTubeAPIError(response.status, "json_parsing_error", "Failed to parse the response JSON")
 
         items = data.get("items", [])
         if not items:
@@ -109,7 +140,7 @@ class YouTubeService:
 
         return Playlist(True, source, title=title)
 
-    async def fetch_playlist_items(self, user_id: int, playlist_id: str) -> AsyncIterator[VideoRecord]:
+    async def fetch_playlist_items(self, user_id: int, playlist_id: str) -> AsyncIterator[Video]:
         headers, source = self._auth_headers(user_id)
         if source == "none":
             return
@@ -140,14 +171,11 @@ class YouTubeService:
             self.bot.logger.debug("Fetching page %d of playlist %s", page_count, playlist_id)
             async with self.bot.session.get(YOUTUBE_API_PLAYLIST_ITEMS, params=params, headers=headers, proxy=self.bot.config.proxy) as response:
                 if response.status != 200:
-                    self.bot.logger.warning("HTTP %d when fetching playlist %s page %d", response.status, playlist_id, page_count)
-                    return
-
+                    raise await YouTubeAPIError.from_response(response, f"Failed to fetch playlist {playlist_id} on page {page_count}")
                 try:
                     data = await response.json()
-                except (ValueError, json.JSONDecodeError) as e:
-                    self.bot.logger.warning("JSON parse error on playlist %s page %d: %s", playlist_id, page_count, e)
-                    return
+                except (ValueError, json.JSONDecodeError):
+                    raise YouTubeAPIError(response.status, "json_parsing_error", "Failed to parse the response JSON")
 
             items = data.get("items", [])
             total_videos += len(items)
@@ -166,15 +194,14 @@ class YouTubeService:
                 channel_title = snippet.get("videoOwnerChannelTitle")
                 published_at = details.get("videoPublishedAt")
                 added_at = snippet.get("publishedAt")
-                yield VideoRecord(
+                yield Video(
                     video_id=video_id,
                     title=snippet.get("title") or "Untitled",
                     url=f"https://www.youtube.com/watch?v={video_id}",
                     channel_id=channel_id,
                     channel_title=channel_title,
                     published_at=published_at,
-                    added_at=added_at,
-                    thumbnail_url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+                    added_at=added_at
                 )
 
             next_token = data.get("nextPageToken")
@@ -184,26 +211,66 @@ class YouTubeService:
 
         self.bot.logger.debug("Completed fetching playlist %s: %d videos from %d pages", playlist_id, total_videos, page_count)
 
-    async def fetch_latest_channel_videos(
+    async def fetch_channels(self, user_id: int, channel_ids: list[str]) -> list[Channel]:
+        results = []
+        chunk_size = 50
+
+        for i in range(0, len(channel_ids), chunk_size):
+            chunk = channel_ids[i:i + chunk_size]
+
+            params = {
+                "part": "snippet,contentDetails",
+                "id": ",".join(chunk)
+            }
+
+            headers, source = self._auth_headers(user_id)
+            api_key = self._api_key()
+            if source == "api-key" and api_key:
+                params["key"] = api_key
+
+            async with self.bot.session.get(YOUTUBE_API_CHANNELS, params=params, headers=headers, proxy=self.bot.config.proxy) as response:
+                if response.status != 200:
+                    raise await YouTubeAPIError.from_response(response, "Failed to fetch channel metadata in bulk")
+
+                data = await response.json()
+
+            for item in data.get("items", []):
+                cid = item.get("id")
+                snippet = item.get("snippet", {})
+                content_details = item.get("contentDetails", {})
+                uploads_id = content_details.get("relatedPlaylists", {}).get("uploads")
+                if not uploads_id:
+                    print(cid, "missing uploads playlist id")
+                    continue
+                title = snippet.get("title", "Unknown Channel")
+
+                results.append(
+                    Channel(
+                        channel_id=cid,
+                        playlist_id=uploads_id,
+                        title=title
+                    )
+                )
+
+        return results
+
+    async def fetch_channel_videos(
         self,
-        channel_id: str,
+        channel: Channel,
         after: str | None = None,
-    ) -> tuple[str, AsyncIterator[VideoRecord]] | None:
+    ) -> tuple[str, AsyncIterator[Video]]:
         if after is None:
-            return await self.fetch_channel_api(channel_id)
+            return await self.fetch_playlist_items(channel.user_id, channel.playlist_id)
 
-        rss_result = await self.fetch_channel_feed(channel_id, after)
-        if rss_result is None:
-            return await self.fetch_channel_api(channel_id, after)
-
-        async def _iterator(videos: list[VideoRecord]) -> AsyncIterator[VideoRecord]:
+        rss_result = await self.fetch_channel_feed(channel.channel_id, after)
+        async def _iterator(videos: list[Video]) -> AsyncIterator[Video]:
             for video in videos:
                 yield video
 
         title, all_new, videos = rss_result
         if all_new:
-            api_result = await self.fetch_channel_api(channel_id, after)
-            return api_result or (title, _iterator(videos))
+            api_result = await self.fetch_playlist_items(channel.user_id, channel.playlist_id)
+            return title, api_result
 
         return title, _iterator(videos)
 
@@ -211,22 +278,23 @@ class YouTubeService:
         self,
         channel_id: str,
         after: str | None = None
-    ) -> tuple[str, bool, list[VideoRecord]] | None:
+    ) -> tuple[str, bool, list[Video]]:
         url = YOUTUBE_CHANNEL_FEED.format(channel_id=channel_id)
         async with self.bot.session.get(url, proxy=self.bot.config.proxy) as response:
             if response.status != 200:
-                return None
+                raise YouTubeAPIError(response.status, "unknown_error", "Failed to fetch the RSS channel feed")
             try:
                 xml = await response.text()
             except Exception:
-                return None
+                raise YouTubeAPIError(response.status, "text_read_error", "Failed to fetch the response text")
+
         try:
             root = ET.fromstring(xml)
         except ET.ParseError:
-            return None
+            raise YouTubeAPIError(response.status, "xml_parsing_error", "Failed to parse the RSS feed XML")
 
         title: str = root.findtext("atom:title", default="Unknown title", namespaces=NS)
-        videos: list[VideoRecord] = []
+        videos: list[Video] = []
 
         entries = root.findall("atom:entry", NS)
         for entry in entries:
@@ -246,87 +314,14 @@ class YouTubeService:
             link = entry.find("atom:link", NS)
 
             videos.append(
-                VideoRecord(
+                Video(
                     video_id=video_id,
                     title=entry.findtext("atom:title", default="Untitled", namespaces=NS) or "Untitled",
                     url=link.attrib.get("href") if link is not None else f"https://www.youtube.com/watch?v={video_id}",
                     channel_id=channel_id,
                     channel_title=channel_title,
-                    published_at=published_at,
-                    thumbnail_url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+                    published_at=published_at
                 )
             )
 
         return title, len(entries) == len(videos), videos
-
-    async def fetch_channel_api(
-        self,
-        channel_id: str,
-        after: str | None = None
-    ) -> tuple[str, AsyncIterator[VideoRecord]] | None:
-        params = {
-            "part": "snippet",
-            "channelId": channel_id,
-            "type": "video",
-            "order": "date",
-            "maxResults": 50,
-        }
-
-        api_key = self._api_key()
-        if api_key:
-            params["key"] = api_key
-
-        async with self.bot.session.get(YOUTUBE_API_SEARCH, params=params, proxy=self.bot.config.proxy) as response:
-            if response.status != 200:
-                return None
-            try:
-                first_page_data = await response.json()
-            except (ValueError, json.JSONDecodeError):
-                return None
-
-        items = first_page_data.get("items", [])
-        channel_title = "Unknown"
-        if items:
-            channel_title = items[0].get("snippet", {}).get("channelTitle") or channel_title
-
-        async def _iterator() -> AsyncIterator[VideoRecord]:
-            data = first_page_data
-            while True:
-                page_items = data.get("items", [])
-
-                for item in page_items:
-                    snippet = item.get("snippet", {})
-                    video_id = item.get("id", {}).get("videoId")
-                    if not video_id:
-                        continue
-
-                    added_at = snippet.get("publishedAt") or utc_now()
-
-                    if after is not None and not self._is_at_or_newer(added_at, after):
-                        return
-
-                    yield VideoRecord(
-                        video_id=video_id,
-                        title=snippet.get("title") or "Untitled",
-                        url=f"https://www.youtube.com/watch?v={video_id}",
-                        channel_id=channel_id,
-                        channel_title=snippet.get("channelTitle") or channel_title,
-                        added_at=added_at,
-                        published_at=added_at,  # Syncing both fields just in case
-                        thumbnail_url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
-                    )
-
-                next_token = data.get("nextPageToken")
-                if not next_token:
-                    break
-
-                params["pageToken"] = next_token
-                async with self.bot.session.get(YOUTUBE_API_SEARCH, params=params, proxy=self.bot.config.proxy) as resp:
-                    if resp.status != 200:
-                        break
-                    try:
-                        data = await resp.json()
-                    except (ValueError, json.JSONDecodeError):
-                        break
-
-        return channel_title, _iterator()

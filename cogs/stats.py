@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from embeds import info_embed
+from ui.embeds import info_embed
 
 class GlobalStatsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
@@ -36,11 +36,11 @@ class UserStatsView(discord.ui.View):
         await interaction.response.defer()
 
         channels, playlists = self.bot.db.count_user_objects(self.user_id)
-        settings = self.bot.db.get_user_settings(self.user_id)
+        user = self.bot.db.ensure_user(self.user_id)
         auth_record = self.bot.db.get_auth_record(self.user_id)
         job = self.bot.workers.get_active_job(self.user_id)
 
-        embed = create_user_stats_embed(channels, playlists, settings, auth_record, job)
+        embed = create_user_stats_embed(channels, playlists, user, auth_record, job)
         await interaction.edit_original_response(embed=embed, view=self)
 
 def create_global_stats_embed(snapshot) -> discord.Embed:
@@ -96,7 +96,7 @@ class StatsCog(commands.Cog):
     async def user_stats(self, interaction: discord.Interaction) -> None:
         self.bot.db.ensure_user(interaction.user.id)
         channels, playlists = self.bot.db.count_user_objects(interaction.user.id)
-        settings = self.bot.db.get_user_settings(interaction.user.id)
+        settings = self.bot.db.ensure_user(interaction.user.id)
         auth_record = self.bot.db.get_auth_record(interaction.user.id)
         job = self.bot.workers.get_active_job(interaction.user.id)
         embed = create_user_stats_embed(channels, playlists, settings, auth_record, job)

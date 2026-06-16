@@ -5,7 +5,7 @@ from typing import Callable, Awaitable
 
 import discord
 from discord import ui
-from embeds import warning_embed
+from ui.embeds import warning_embed
 
 @dataclass(slots=True)
 class PageViewState:

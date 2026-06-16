@@ -4,8 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from embeds import success_embed
-from services.utils import require_notification_target
+from ui.embeds import success_embed
+from services.utils import require_notification_target, require_not_ratelimited
 
 class RefreshCog(commands.Cog):
     def __init__(self, bot):
@@ -14,6 +14,8 @@ class RefreshCog(commands.Cog):
     @app_commands.command(name="refresh", description="Force immediate refresh of playlists and videos")
     async def refresh(self, interaction: discord.Interaction) -> None:
         if not await require_notification_target(interaction, self.bot):
+            return
+        if not await require_not_ratelimited(interaction, self.bot):
             return
         self.bot.db.ensure_user(interaction.user.id)
 

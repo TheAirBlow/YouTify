@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from embeds import success_embed
+from ui.embeds import success_embed
 from services.utils import require_notification_target
 
 class ResetCog(commands.Cog):

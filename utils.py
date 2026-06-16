@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Iterable, Sequence
@@ -95,3 +96,14 @@ UTC = timezone.utc
 
 def utc_now() -> str:
     return datetime.now(tz=UTC).isoformat()
+
+def ensure_valid_title(title: str) -> str:
+    cleaned = "".join(
+        char for char in title
+        if unicodedata.category(char) not in ('Cf', 'Cc', 'Cs', 'Co', 'Cn')
+    )
+
+    if not cleaned.strip():
+        return "~"
+
+    return cleaned.strip()

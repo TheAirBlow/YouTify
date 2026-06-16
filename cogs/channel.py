@@ -4,9 +4,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from embeds import error_embed, success_embed, warning_embed, make_embed
-from services.utils import require_notification_target
-from utils import parse_channel_identifier
+from ui.embeds import error_embed, success_embed, warning_embed, make_embed
+from services.utils import require_notification_target, require_not_ratelimited
+from utils import parse_channel_identifier, ensure_valid_title
 from constants import Palette
 
 class ChannelCog(commands.GroupCog, name="channel"):
@@ -18,20 +18,20 @@ class ChannelCog(commands.GroupCog, name="channel"):
     async def add(self, interaction: discord.Interaction, channel: str) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
+        if not await require_not_ratelimited(interaction, self.bot):
+            return
 
         self.bot.db.ensure_user(interaction.user.id)
         channel_id = parse_channel_identifier(channel)
         current = self.bot.db.get_channel(interaction.user.id, channel_id)
-        if current and "user" in current.trackers:
-            await interaction.response.send_message(embed=error_embed("Already pinned", "That channel is already pinned by you."), ephemeral=True)
+        if current:
+            await interaction.response.send_message(
+                embed=warning_embed("Already added", f"**{ensure_valid_title(current.title)}** is already added."),
+                ephemeral=True
+            )
             return
 
         await interaction.response.defer(ephemeral=True)
-        if current:
-            self.bot.db.add_channel_tracker(interaction.user.id, channel_id, "user")
-            await interaction.followup.send(embed=success_embed("Channel pinned", f"`{current.title}` is now pinned and will stay tracked."), ephemeral=True)
-            await self.bot.workers.restart_user(interaction.user.id)
-            return
 
         result = self.bot.youtube.fetch_channel_feed(channel_id)
         if not result:
@@ -39,7 +39,10 @@ class ChannelCog(commands.GroupCog, name="channel"):
 
         title, _ = result
         self.bot.db.upsert_channel(interaction.user.id, channel_id, title, trackers=["user"])
-        await interaction.followup.send(embed=success_embed("Channel added", f"`{title}` was successfully added."), ephemeral=True)
+        await interaction.followup.send(
+            embed=success_embed("Channel added", f"**{ensure_valid_title(title)}** was successfully added."),
+            ephemeral=True
+        )
         await self.bot.workers.restart_user(interaction.user.id)
 
     @app_commands.command(name="remove", description="Remove a tracked channel or unpin it")
@@ -59,29 +62,122 @@ class ChannelCog(commands.GroupCog, name="channel"):
         if "user" in current.trackers:
             removed = self.bot.db.remove_channel_tracker(interaction.user.id, channel_id, "user")
             if removed is None:
-                await interaction.followup.send(embed=success_embed("Channel removed", f"`{channel_id}` was removed."), ephemeral=True)
+                await interaction.followup.send(
+                    embed=success_embed("Channel removed", f"**{ensure_valid_title(current.title)}** was removed."),
+                    ephemeral=True
+                )
             else:
-                await interaction.followup.send(embed=success_embed("Channel unpinned", f"`{channel_id}` is no longer pinned by you."), ephemeral=True)
+                await interaction.followup.send(
+                    embed=success_embed("Channel unpinned", f"**{ensure_valid_title(current.title)}** is no longer pinned by you."),
+                    ephemeral=True
+                )
             await self.bot.workers.restart_user(interaction.user.id)
             return
 
         self.bot.db.remove_channel(interaction.user.id, channel_id)
-        await interaction.followup.send(embed=success_embed("Channel removed", f"`{channel_id}` was removed."), ephemeral=True)
+        await interaction.followup.send(
+            embed=success_embed("Channel removed", f"**{ensure_valid_title(current.title)}** was removed."),
+            ephemeral=True
+        )
         await self.bot.workers.restart_user(interaction.user.id)
 
-    @app_commands.command(name="blacklist", description="Blacklist a channel without deleting it")
-    @app_commands.describe(channel="Channel link, handle, or raw ID")
-    async def blacklist(self, interaction: discord.Interaction, channel: str) -> None:
+    @app_commands.command(name="pin", description="Pin or unpin a tracked channel")
+    @app_commands.describe(
+        channel="Channel link, handle, or raw ID",
+        pin="True to pin, False to unpin (default: True)"
+    )
+    async def pin(self, interaction: discord.Interaction, channel: str, pin: bool = True) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
-        self.bot.db.ensure_user(interaction.user.id)
 
+        self.bot.db.ensure_user(interaction.user.id)
         channel_id = parse_channel_identifier(channel)
         current = self.bot.db.get_channel(interaction.user.id, channel_id)
+
+        if not current:
+            await interaction.response.send_message(
+                embed=error_embed("Not tracked", "You must add this channel before you can pin it."),
+                ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
 
-        self.bot.db.set_channel_blacklisted(interaction.user.id, channel_id, title, True)
-        await interaction.followup.send(embed=success_embed("Channel blacklisted", f"`{current.title}` will be excluded from scraping."), ephemeral=True)
+        tracker_ids = {t.tracker_id for t in current.trackers}
+        if pin:
+            if "user" in tracker_ids:
+                await interaction.followup.send(
+                    embed=warning_embed("Already pinned", f"**{ensure_valid_title(current.title)}** is already pinned"),
+                    ephemeral=True
+                )
+            else:
+                self.bot.db.add_channel_tracker(interaction.user.id, channel_id, "user")
+                await interaction.followup.send(
+                    embed=success_embed("Channel pinned", f"**{ensure_valid_title(current.title)}** is now pinned."),
+                    ephemeral=True
+                )
+        else:
+            if "user" in tracker_ids:
+                self.bot.db.remove_channel_tracker(interaction.user.id, channel_id, "user")
+                await interaction.followup.send(
+                    embed=success_embed("Channel unpinned", f"**{ensure_valid_title(current.title)}** is no longer pinned."),
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    embed=warning_embed("Not pinned", f"**{ensure_valid_title(current.title)}** was not pinned."),
+                    ephemeral=True
+                )
+
+        await self.bot.workers.restart_user(interaction.user.id)
+
+    @app_commands.command(name="blacklist", description="Blacklist/Unblacklist a channel from being tracked")
+    @app_commands.describe(
+        channel="Channel link, handle, or raw ID",
+        blacklist="True to blacklist, False to unblacklist (default: True)"
+    )
+    async def blacklist(self, interaction: discord.Interaction, channel: str, blacklist: bool = True) -> None:
+        if not await require_notification_target(interaction, self.bot):
+            return
+
+        self.bot.db.ensure_user(interaction.user.id)
+        channel_id = parse_channel_identifier(channel)
+        current = self.bot.db.get_channel(interaction.user.id, channel_id)
+
+        if not current:
+            await interaction.response.send_message(
+                embed=error_embed("Not tracked", "You must track this channel before you can blacklist it."),
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        if blacklist:
+            if current.blacklisted:
+                await interaction.followup.send(
+                    embed=warning_embed("Already blacklisted", f"**{ensure_valid_title(current.title)}** is already blacklisted."),
+                    ephemeral=True
+                )
+            else:
+                self.bot.db.set_channel_blacklisted(interaction.user.id, channel_id, current.title, True)
+                await interaction.followup.send(
+                    embed=success_embed("Channel blacklisted", f"**{ensure_valid_title(current.title)}** will now be excluded from scraping."),
+                    ephemeral=True
+                )
+        else:
+            if not current.blacklisted:
+                await interaction.followup.send(
+                    embed=warning_embed("Not blacklisted", f"**{ensure_valid_title(current.title)}** is not currently blacklisted."),
+                    ephemeral=True
+                )
+            else:
+                self.bot.db.set_channel_blacklisted(interaction.user.id, channel_id, current.title, False)
+                await interaction.followup.send(
+                    embed=success_embed("Channel unblacklisted", f"**{ensure_valid_title(current.title)}** will now be included in scraping."),
+                    ephemeral=True
+                )
+
         await self.bot.workers.restart_user(interaction.user.id)
 
     @app_commands.command(name="list", description="List tracked channels")
@@ -98,8 +194,6 @@ class ChannelCog(commands.GroupCog, name="channel"):
     async def list(self, interaction: discord.Interaction, filter: app_commands.Choice[str] | None = None) -> None:
         if not await require_notification_target(interaction, self.bot):
             return
-
-        await interaction.response.defer(ephemeral=True)
         self.bot.db.ensure_user(interaction.user.id)
 
         filter_name = filter.value if filter else "all"
@@ -121,16 +215,17 @@ class ChannelCog(commands.GroupCog, name="channel"):
                 filter_name=filter_name
             )
             rows = []
-            for record in channels:
+            for channel in channels:
                 status = []
-                if record.blacklisted:
+                tracker_ids = {t.tracker_id for t in channel.trackers}
+                if channel.blacklisted:
                     status.append("⛔")
-                if record.has_manual_tracker:
+                if "user" in tracker_ids:
                     status.append("📌")
-                if record.tracked_by_playlist:
+                if any(tid != "user" for tid in tracker_ids):
                     status.append("📚")
                 status_text = " ".join(status) if status else "✓"
-                rows.append(f"{status_text} [{record.title}](https://www.youtube.com/channel/{record.channel_id})")
+                rows.append(f"{status_text} [{ensure_valid_title(channel.title)}](https://www.youtube.com/channel/{channel.channel_id})")
 
             embed = make_embed(f"Channels ({page_index + 1}/{total_pages})", color=Palette.INFO)
             embed.description = "\n".join(rows)

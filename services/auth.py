@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 from google_auth_oauthlib.flow import Flow
-from embeds import error_embed, success_embed, warning_embed
+from ui.embeds import error_embed, success_embed, warning_embed
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"]
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
