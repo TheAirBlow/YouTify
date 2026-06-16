@@ -240,7 +240,6 @@ class YouTubeService:
                 content_details = item.get("contentDetails", {})
                 uploads_id = content_details.get("relatedPlaylists", {}).get("uploads")
                 if not uploads_id:
-                    print(cid, "missing uploads playlist id")
                     continue
                 title = snippet.get("title", "Unknown Channel")
 
@@ -259,9 +258,6 @@ class YouTubeService:
         channel: Channel,
         after: str | None = None,
     ) -> tuple[str, AsyncIterator[Video]]:
-        if after is None:
-            return await self.fetch_playlist_items(channel.user_id, channel.playlist_id)
-
         rss_result = await self.fetch_channel_feed(channel.channel_id, after)
         async def _iterator(videos: list[Video]) -> AsyncIterator[Video]:
             for video in videos:
@@ -269,7 +265,7 @@ class YouTubeService:
 
         title, all_new, videos = rss_result
         if all_new:
-            api_result = await self.fetch_playlist_items(channel.user_id, channel.playlist_id)
+            api_result = self.fetch_playlist_items(channel.user_id, channel.playlist_id)
             return title, api_result
 
         return title, _iterator(videos)

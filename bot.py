@@ -192,19 +192,25 @@ class YoutifyBot(commands.Bot):
                     elif not playlist.can_access:
                         self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=True)
 
-                    feed = self.youtube.fetch_playlist_items(user_id, playlist.playlist_id)
+                    try:
+                        feed = self.youtube.fetch_playlist_items(user_id, playlist.playlist_id)
+                    except YouTubeAPIError as e:
+                        if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
+                            self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=False)
+                            return
+                        raise
 
                     async for batch in async_batched(feed, 100):
-                        channel_ids: list[Channel] = []
+                        channel_ids: set[Channel] = set()
                         last_seen: dict[str, str] = {}
 
                         for video in batch:
-                            channel_ids.append(video.channel_id)
+                            channel_ids.add(video.channel_id)
                             if catchup and (video.channel_id not in last_seen or self.youtube._is_at_or_newer(video.added_at, last_seen[video.channel_id])):
                                 last_seen[video.channel_id] = video.added_at
                                 continue
 
-                        channels = await self.youtube.fetch_channels(user_id, channel_ids)
+                        channels = await self.youtube.fetch_channels(user_id, list(channel_ids))
                         self.db.upsert_playlist_channels(user_id, playlist.playlist_id, channels, last_seen if catchup else None)
 
                     self.db.remove_orphaned_playlist_channels(user_id, playlist.playlist_id, cutoff)
@@ -214,8 +220,9 @@ class YoutifyBot(commands.Bot):
                 if progress:
                     progress("playlist sync", f"Syncing {playlist.title}", completed_count - 1, total)
 
-        tasks = [sync_playlist(playlist) for playlist in playlists]
-        await asyncio.gather(*tasks)
+        async with asyncio.TaskGroup() as tg:
+            for playlist in playlists:
+                tg.create_task(sync_playlist(playlist))
 
     async def scrape_latest_videos(self, user_id: int, progress: ProgressCallback | None = None) -> None:
         total = self.db.count_channels(user_id, "tracked")
@@ -238,14 +245,12 @@ class YoutifyBot(commands.Bot):
                     self.logger.debug("Skipping channel %s (%s) since last seen is null", channel.title, channel.channel_id)
                 else:
                     try:
-                        result = await self.youtube.fetch_channel_videos(channel, after=channel.last_seen_ts)
+                        title, videos = await self.youtube.fetch_channel_videos(channel, after=channel.last_seen_ts)
                     except YouTubeAPIError as e:
-                        if e.status == 404 or e.reason in ("channelNotFound", "resourceNotFound"):
+                        if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
                             await self.bot.db.remove_channel(user_id, channel.channel_id)
                             return
                         raise
-
-                    title, videos = result
 
                     async for video in videos:
                         if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
@@ -268,8 +273,9 @@ class YoutifyBot(commands.Bot):
                 if progress:
                     progress("latest videos", f"Scraped {channel.title}", completed_count - 1, total)
 
-        tasks = [scrape_channel(channel) for channel in channels]
-        await asyncio.gather(*tasks)
+        async with asyncio.TaskGroup() as tg:
+            for channel in channels:
+                tg.create_task(scrape_channel(channel))
 
 def load_bot(config_path: str | Path = "config.json") -> YoutifyBot:
     config = BotConfig.load(config_path)
