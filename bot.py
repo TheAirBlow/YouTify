@@ -170,6 +170,8 @@ class YoutifyBot(commands.Bot):
             self.logger.debug("No playlists found for user %s", user_id)
             return
 
+        progress("Playlist Sync", f"Waiting for progress...", 0, total)
+
         self.logger.debug("Syncing %d playlists for user %s (concurrency limit: %d)", total, user_id, self.config.concurrency_limit)
         user = self.db.ensure_user(user_id)
         playlists = self.db.list_playlists(user_id)
@@ -218,7 +220,7 @@ class YoutifyBot(commands.Bot):
 
                 completed_count += 1
                 if progress:
-                    progress("playlist sync", f"Syncing {playlist.title}", completed_count - 1, total)
+                    progress("Playlist Sync", f"Synced {playlist.title}", completed_count - 1, total)
 
         async with asyncio.TaskGroup() as tg:
             for playlist in playlists:
@@ -229,6 +231,8 @@ class YoutifyBot(commands.Bot):
         if total == 0:
             self.logger.debug("No tracked channels found for user %s", user_id)
             return
+
+        progress("Scraping Videos", f"Waiting for progress...", 0, total)
 
         self.logger.debug("Scraping %d channels for user %s (concurrency limit: %d)", total, user_id, self.config.concurrency_limit)
         channels = self.db.list_channels(user_id, "tracked")
@@ -246,32 +250,34 @@ class YoutifyBot(commands.Bot):
                 else:
                     try:
                         title, videos = await self.youtube.fetch_channel_videos(channel, after=channel.last_seen_ts)
+
+                        total_videos = 0
+                        async for video in videos:
+                            total_videos += 1
+                            if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
+                                self.logger.debug(
+                                    "Found a new video '%s' (%s) by %s (%s) for user %s",
+                                    video.title,
+                                    video.url,
+                                    channel.title,
+                                    channel.channel_id,
+                                    user_id
+                                )
+
+                                await self.send_video_notification(user_id, video)
+                            if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
+                                self.db.upsert_channel(user_id, channel.channel_id, title, last_seen_ts=video.published_at)
+
+                        self.logger.debug("Processed %s videos from channel %s", total_videos, channel.channel_id)
                     except YouTubeAPIError as e:
                         if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
                             await self.bot.db.remove_channel(user_id, channel.channel_id)
                             return
                         raise
 
-                    async for video in videos:
-                        if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
-                            self.logger.debug(
-                                "Found a new video '%s' (%s) by %s (%s) for user %s",
-                                video.title,
-                                video.url,
-                                channel.title,
-                                channel.channel_id,
-                                user_id
-                            )
-
-                            await self.send_video_notification(user_id, video)
-                        if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
-                            self.db.upsert_channel(user_id, channel.channel_id, title, last_seen_ts=video.published_at)
-
-                    self.logger.debug("Processed videos from channel %s", channel.channel_id)
-
                 completed_count += 1
                 if progress:
-                    progress("latest videos", f"Scraped {channel.title}", completed_count - 1, total)
+                    progress("Scraping Videos", f"Scraped {channel.title}", completed_count - 1, total)
 
         async with asyncio.TaskGroup() as tg:
             for channel in channels:
