@@ -263,6 +263,7 @@ class Database:
                         try:
                             session.flush()
                         except IntegrityError:
+                            session.rollback()
                             pass
 
             return channel
@@ -349,6 +350,7 @@ class Database:
                     try:
                         session.flush()
                     except IntegrityError:
+                        session.rollback()
                         pass
 
     def set_channel_blacklisted(self, user_id: int, channel_id: str, title: str, blacklisted: bool) -> Channel:

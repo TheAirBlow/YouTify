@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from services.youtube import YouTubeQuotaExceeded, YouTubeAPIError
+from services.youtube import YouTubeQuotaExceeded
 
 if TYPE_CHECKING:
     from bot import YoutifyBot
@@ -162,8 +162,8 @@ class UserTaskManager:
                     except YouTubeQuotaExceeded:
                         self._handle_quota_exceeded()
                         continue
-                    except YouTubeAPIError as e:
-                        self.bot.logger.error("Unexpected YouTube API error caught: %s", e.message)
+                    except Exception as e:
+                        self.bot.logger.error("Unexpected worker error caught: %s", e.message)
                     self._clear_progress(user_id)
 
                     next_playlist_run = loop.time() + playlist_interval
@@ -177,8 +177,8 @@ class UserTaskManager:
                     except YouTubeQuotaExceeded:
                         self._handle_quota_exceeded()
                         continue
-                    except YouTubeAPIError as e:
-                        self.bot.logger.error("Unexpected YouTube API error caught: %s", e.message)
+                    except Exception as e:
+                        self.bot.logger.error("Unexpected worker error caught: %s", e.message)
                     self._clear_progress(user_id)
 
                     next_latest_run = loop.time() + latest_interval
