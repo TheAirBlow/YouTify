@@ -271,7 +271,7 @@ class YoutifyBot(commands.Bot):
                         self.logger.debug("Processed %s videos from channel %s", total_videos, channel.channel_id)
                     except YouTubeAPIError as e:
                         if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
-                            await self.db.set_channel_blacklisted(user_id, channel.channel_id, channel.title, True)
+                            self.db.set_channel_blacklisted(user_id, channel.channel_id, channel.title, True)
                             return
                         raise
 
