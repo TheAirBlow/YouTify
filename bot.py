@@ -141,7 +141,7 @@ class YoutifyBot(commands.Bot):
                 self.logger.debug("Sent DM notification to user %s for video %s", user_id, video.video_id)
                 return True
             elif user.notify_channel_id:
-                guild = bot.get_guild(user.notify_guild_id)
+                guild = self.get_guild(user.notify_guild_id)
                 if guild is None:
                     self.logger.warning(
                         "Guild %s for user %s not found",
