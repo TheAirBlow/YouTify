@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -94,16 +95,17 @@ class YouTubeService:
         key = getattr(self.bot.config, "youtube_api_key", None)
         return key or None
 
-    def _auth_headers(self, user_id: int | None = None) -> tuple[dict[str, str], str]:
+    async def _auth_headers(self, user_id: int | None = None) -> tuple[dict[str, str], str]:
         if user_id is not None:
             record = self.bot.db.get_auth_record(user_id)
             creds = self._make_credentials(record)
             if creds:
-                try:
-                    if creds.expired and creds.refresh_token:
-                        creds.refresh(Request())
-                except Exception:
-                    pass
+                if creds.expired and creds.refresh_token:
+                    try:
+                        await asyncio.to_thread(creds.refresh, Request())
+                        self.bot.db.set_auth_record(user_id, creds.to_json())
+                    except Exception:
+                        self.bot.logger.warning("Failed to refresh Google credentials for user %s", user_id)
                 return {"Authorization": f"Bearer {creds.token}"}, "user-auth"
         api_key = self._api_key()
         if api_key:
@@ -117,7 +119,7 @@ class YouTubeService:
             "maxResults": 1
         }
 
-        headers, source = self._auth_headers(user_id)
+        headers, source = await self._auth_headers(user_id)
         if source == "api-key":
             api_key = self._api_key()
             if not api_key:
@@ -141,7 +143,7 @@ class YouTubeService:
         return Playlist(True, source, title=title)
 
     async def fetch_playlist_items(self, user_id: int, playlist_id: str) -> AsyncIterator[Video]:
-        headers, source = self._auth_headers(user_id)
+        headers, source = await self._auth_headers(user_id)
         if source == "none":
             return
 
@@ -223,7 +225,7 @@ class YouTubeService:
                 "id": ",".join(chunk)
             }
 
-            headers, source = self._auth_headers(user_id)
+            headers, source = await self._auth_headers(user_id)
             api_key = self._api_key()
             if source == "api-key" and api_key:
                 params["key"] = api_key

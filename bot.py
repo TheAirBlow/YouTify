@@ -164,6 +164,36 @@ class YoutifyBot(commands.Bot):
             return False
         return False
 
+    async def handle_deauth(self, user_id: int) -> None:
+        if not self.db.get_auth_record(user_id):
+            return
+
+        self.logger.warning("Removing deauthorized Google credentials for user %s", user_id)
+        self.db.remove_auth_record(user_id)
+
+        user = self.db.ensure_user(user_id)
+        embed = error_embed(
+            "Google account deauthorized",
+            "Your Google account credentials are no longer valid and have been removed.\n"
+            "Please authenticate again using the `/auth` command.",
+        )
+        try:
+            if user.notify_dms:
+                discord_user = await self.fetch_user(user_id)
+                await discord_user.send(embed=embed)
+                return
+            if user.notify_channel_id:
+                guild = self.get_guild(user.notify_guild_id)
+                if guild:
+                    channel = guild.get_channel(user.notify_channel_id)
+                    if channel:
+                        await channel.send(embed=embed)
+                        return
+            discord_user = await self.fetch_user(user_id)
+            await discord_user.send(embed=embed)
+        except discord.DiscordException:
+            self.logger.exception("Failed to send deauth notification to user %s", user_id)
+
     async def sync_user_playlists(self, user_id: int, progress: ProgressCallback | None = None) -> None:
         total = self.db.count_playlists(user_id)
         if total == 0:
@@ -183,44 +213,50 @@ class YoutifyBot(commands.Bot):
 
         async def sync_playlist(playlist) -> None:
             nonlocal completed_count
-            async with semaphore:
-                metadata = await self.youtube.fetch_playlist(user_id, playlist.playlist_id)
-                if not metadata.can_access:
-                    self.logger.debug("Unable to access playlist %s by user %s", playlist.playlist_id, user_id)
-                    self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=False)
+            try:
+                async with semaphore:
+                    metadata = await self.youtube.fetch_playlist(user_id, playlist.playlist_id)
+                    if not metadata.can_access:
+                        self.logger.debug("Unable to access playlist %s by user %s", playlist.playlist_id, user_id)
+                        self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=False)
+                    else:
+                        if metadata.title and metadata.title != playlist.title:
+                            self.db.upsert_playlist(user_id, playlist.playlist_id, metadata.title, can_access=True)
+                        elif not playlist.can_access:
+                            self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=True)
+
+                        try:
+                            feed = self.youtube.fetch_playlist_items(user_id, playlist.playlist_id)
+                        except YouTubeAPIError as e:
+                            if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
+                                self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=False)
+                                return
+                            raise
+
+                        async for batch in async_batched(feed, 100):
+                            channel_ids: set[Channel] = set()
+                            last_seen: dict[str, str] = {}
+
+                            for video in batch:
+                                channel_ids.add(video.channel_id)
+                                if catchup and (video.channel_id not in last_seen or self.youtube._is_at_or_newer(video.added_at, last_seen[video.channel_id])):
+                                    last_seen[video.channel_id] = video.added_at
+                                    continue
+
+                            channels = await self.youtube.fetch_channels(user_id, list(channel_ids))
+                            self.db.upsert_playlist_channels(user_id, playlist.playlist_id, channels, last_seen if catchup else None)
+
+                        self.db.remove_orphaned_playlist_channels(user_id, playlist.playlist_id, cutoff)
+                        self.db.set_playlist_synced(user_id, playlist.playlist_id, utc_now())
+
+                    completed_count += 1
+                    if progress:
+                        progress("Playlist Sync", f"Synced {playlist.title}", completed_count - 1, total)
+            except YouTubeAPIError as e:
+                if e.status == 401:
+                    await self.handle_deauth(user_id)
                 else:
-                    if metadata.title and metadata.title != playlist.title:
-                        self.db.upsert_playlist(user_id, playlist.playlist_id, metadata.title, can_access=True)
-                    elif not playlist.can_access:
-                        self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=True)
-
-                    try:
-                        feed = self.youtube.fetch_playlist_items(user_id, playlist.playlist_id)
-                    except YouTubeAPIError as e:
-                        if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
-                            self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=False)
-                            return
-                        raise
-
-                    async for batch in async_batched(feed, 100):
-                        channel_ids: set[Channel] = set()
-                        last_seen: dict[str, str] = {}
-
-                        for video in batch:
-                            channel_ids.add(video.channel_id)
-                            if catchup and (video.channel_id not in last_seen or self.youtube._is_at_or_newer(video.added_at, last_seen[video.channel_id])):
-                                last_seen[video.channel_id] = video.added_at
-                                continue
-
-                        channels = await self.youtube.fetch_channels(user_id, list(channel_ids))
-                        self.db.upsert_playlist_channels(user_id, playlist.playlist_id, channels, last_seen if catchup else None)
-
-                    self.db.remove_orphaned_playlist_channels(user_id, playlist.playlist_id, cutoff)
-                    self.db.set_playlist_synced(user_id, playlist.playlist_id, utc_now())
-
-                completed_count += 1
-                if progress:
-                    progress("Playlist Sync", f"Synced {playlist.title}", completed_count - 1, total)
+                    raise
 
         async with asyncio.TaskGroup() as tg:
             for playlist in playlists:
@@ -270,10 +306,12 @@ class YoutifyBot(commands.Bot):
 
                         self.logger.debug("Processed %s videos from channel %s", total_videos, channel.channel_id)
                     except YouTubeAPIError as e:
-                        if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
+                        if e.status == 401:
+                            await self.handle_deauth(user_id)
+                        elif e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
                             self.db.set_channel_blacklisted(user_id, channel.channel_id, channel.title, True)
-                            return
-                        raise
+                        else:
+                            raise
 
                 completed_count += 1
                 if progress:
