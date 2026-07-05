@@ -278,13 +278,19 @@ class YouTubeService:
         after: str | None = None
     ) -> tuple[str, bool, list[Video]]:
         url = YOUTUBE_CHANNEL_FEED.format(channel_id=channel_id)
-        async with self.bot.session.get(url, proxy=self.bot.config.proxy) as response:
-            if response.status != 200:
-                raise YouTubeAPIError(response.status, "unknown_error", "Failed to fetch the RSS channel feed")
-            try:
-                xml = await response.text()
-            except Exception:
-                raise YouTubeAPIError(response.status, "text_read_error", "Failed to fetch the response text")
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            async with self.bot.session.get(url, proxy=self.bot.config.proxy) as response:
+                if response.status != 200:
+                    if response.status >= 500 and attempt < max_attempts - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise YouTubeAPIError(response.status, "unknown_error", "Failed to fetch the RSS channel feed")
+                try:
+                    xml = await response.text()
+                except Exception:
+                    raise YouTubeAPIError(response.status, "text_read_error", "Failed to fetch the response text")
+            break
 
         try:
             root = ET.fromstring(xml)

@@ -311,7 +311,10 @@ class YoutifyBot(commands.Bot):
                         elif e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
                             self.db.set_channel_blacklisted(user_id, channel.channel_id, channel.title, True)
                         else:
-                            raise
+                            self.logger.warning(
+                                "Failed to scrape channel %s (%s) for user %s, skipping this cycle: %s",
+                                channel.title, channel.channel_id, user_id, e
+                            )
 
                 completed_count += 1
                 if progress:
