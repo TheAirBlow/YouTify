@@ -64,8 +64,18 @@ class Playlist:
     title: str | None = None
 
 class YouTubeService:
+    REFRESH_MAX_ATTEMPTS = 5
+    REFRESH_BASE_DELAY = 1.0
+
     def __init__(self, bot):
         self.bot = bot
+        self._refresh_locks: dict[int, asyncio.Lock] = {}
+
+    def _refresh_lock(self, user_id: int) -> asyncio.Lock:
+        lock = self._refresh_locks.get(user_id)
+        if lock is None:
+            lock = self._refresh_locks[user_id] = asyncio.Lock()
+        return lock
 
     @staticmethod
     def _is_at_or_newer(left: str, right: str) -> bool:
@@ -101,11 +111,27 @@ class YouTubeService:
             creds = self._make_credentials(record)
             if creds:
                 if creds.expired and creds.refresh_token:
-                    try:
-                        await asyncio.to_thread(creds.refresh, Request())
-                        self.bot.db.set_auth_record(user_id, creds.to_json())
-                    except Exception:
-                        self.bot.logger.warning("Failed to refresh Google credentials for user %s", user_id)
+                    async with self._refresh_lock(user_id):
+                        record = self.bot.db.get_auth_record(user_id)
+                        creds = self._make_credentials(record) or creds
+                        if creds.expired and creds.refresh_token:
+                            last_error: Exception | None = None
+                            for attempt in range(self.REFRESH_MAX_ATTEMPTS):
+                                try:
+                                    await asyncio.to_thread(creds.refresh, Request())
+                                    self.bot.db.set_auth_record(user_id, creds.to_json())
+                                    last_error = None
+                                    break
+                                except Exception as e:
+                                    last_error = e
+                                    if attempt < self.REFRESH_MAX_ATTEMPTS - 1:
+                                        await asyncio.sleep(self.REFRESH_BASE_DELAY * (2 ** attempt))
+                            if last_error is not None:
+                                self.bot.logger.warning(
+                                    "Failed to refresh Google credentials for user %s after %d attempts: %s",
+                                    user_id, self.REFRESH_MAX_ATTEMPTS, last_error,
+                                )
+                                raise YouTubeAPIError(401, "refresh_failed", "Failed to refresh Google credentials")
                 return {"Authorization": f"Bearer {creds.token}"}, "user-auth"
         api_key = self._api_key()
         if api_key:
