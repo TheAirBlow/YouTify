@@ -262,11 +262,13 @@ class YoutifyBot(commands.Bot):
             for playlist in playlists:
                 tg.create_task(sync_playlist(playlist))
 
-    async def scrape_latest_videos(self, user_id: int, progress: ProgressCallback | None = None) -> None:
+    RSS_MAX_FAILURES = 10
+
+    async def scrape_latest_videos(self, user_id: int, progress: ProgressCallback | None = None) -> int:
         total = self.db.count_channels(user_id, "tracked")
         if total == 0:
             self.logger.debug("No tracked channels found for user %s", user_id)
-            return
+            return 0
 
         progress("Scraping Videos", f"Waiting for progress...", 0, total)
 
@@ -275,9 +277,10 @@ class YoutifyBot(commands.Bot):
 
         semaphore = asyncio.Semaphore(self.config.concurrency_limit)
         completed_count = 0
+        rss_failure_count = 0
 
         async def scrape_channel(channel) -> None:
-            nonlocal completed_count
+            nonlocal completed_count, rss_failure_count
             async with semaphore:
                 if channel.last_seen_ts is None:
                     channel.last_seen_ts = utc_now()
@@ -304,12 +307,25 @@ class YoutifyBot(commands.Bot):
                             if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
                                 self.db.upsert_channel(user_id, channel.channel_id, title, last_seen_ts=video.published_at)
 
+                        if channel.rss_failures:
+                            self.db.reset_rss_failures(user_id, channel.channel_id)
                         self.logger.debug("Processed %s videos from channel %s", total_videos, channel.channel_id)
                     except YouTubeAPIError as e:
                         if e.status == 401:
                             await self.handle_deauth(user_id)
-                        elif e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
-                            self.db.set_channel_blacklisted(user_id, channel.channel_id, channel.title, True)
+                        elif e.source == "rss":
+                            rss_failure_count += 1
+                            updated = self.db.record_rss_failure(user_id, channel.channel_id, channel.title, self.RSS_MAX_FAILURES)
+                            if updated.blacklisted:
+                                self.logger.warning(
+                                    "Channel %s (%s) blacklisted after %d consecutive RSS failures for user %s: %s",
+                                    channel.title, channel.channel_id, self.RSS_MAX_FAILURES, user_id, e
+                                )
+                            else:
+                                self.logger.debug(
+                                    "RSS fetch failed for channel %s (%s), failure #%d for user %s: %s",
+                                    channel.title, channel.channel_id, updated.rss_failures, user_id, e
+                                )
                         else:
                             self.logger.warning(
                                 "Failed to scrape channel %s (%s) for user %s, skipping this cycle: %s",
@@ -323,6 +339,8 @@ class YoutifyBot(commands.Bot):
         async with asyncio.TaskGroup() as tg:
             for channel in channels:
                 tg.create_task(scrape_channel(channel))
+
+        return rss_failure_count
 
 def load_bot(config_path: str | Path = "config.json") -> YoutifyBot:
     config = BotConfig.load(config_path)

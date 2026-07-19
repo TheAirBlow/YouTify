@@ -36,6 +36,7 @@ class Channel(Base):
     title = Column(String, nullable=False)
     blacklisted = Column(Boolean, nullable=False, default=False)
     last_seen_ts = Column(String, nullable=True)
+    rss_failures = Column(Integer, nullable=False, default=0)
     created_at = Column(String, nullable=False)
     updated_at = Column(String, nullable=False)
 

@@ -27,10 +27,11 @@ NS = {
 }
 
 class YouTubeAPIError(Exception):
-    def __init__(self, status: int, reason: str, message: str):
+    def __init__(self, status: int, reason: str, message: str, source: str = "api"):
         self.status = status
         self.reason = reason
         self.message = message
+        self.source = source
         super().__init__(f"YouTube API Error {status} [{reason}]: {message}")
 
     @classmethod
@@ -311,17 +312,17 @@ class YouTubeService:
                     if response.status >= 500 and attempt < max_attempts - 1:
                         await asyncio.sleep(2 ** attempt)
                         continue
-                    raise YouTubeAPIError(response.status, "unknown_error", "Failed to fetch the RSS channel feed")
+                    raise YouTubeAPIError(response.status, "unknown_error", "Failed to fetch the RSS channel feed", source="rss")
                 try:
                     xml = await response.text()
                 except Exception:
-                    raise YouTubeAPIError(response.status, "text_read_error", "Failed to fetch the response text")
+                    raise YouTubeAPIError(response.status, "text_read_error", "Failed to fetch the response text", source="rss")
             break
 
         try:
             root = ET.fromstring(xml)
         except ET.ParseError:
-            raise YouTubeAPIError(response.status, "xml_parsing_error", "Failed to parse the RSS feed XML")
+            raise YouTubeAPIError(response.status, "xml_parsing_error", "Failed to parse the RSS feed XML", source="rss")
 
         title: str = root.findtext("atom:title", default="Unknown title", namespaces=NS)
         videos: list[Video] = []

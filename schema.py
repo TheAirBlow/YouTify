@@ -355,6 +355,27 @@ class Database:
     def set_channel_blacklisted(self, user_id: int, channel_id: str, title: str, blacklisted: bool) -> Channel:
         return self.upsert_channel(user_id, channel_id, title, blacklisted=blacklisted)
 
+    def record_rss_failure(self, user_id: int, channel_id: str, title: str, max_failures: int) -> Channel:
+        with self.cursor() as session:
+            channel = session.scalar(
+                select(Channel).where(Channel.user_id == user_id, Channel.channel_id == channel_id)
+            )
+            channel.title = title
+            channel.rss_failures += 1
+            channel.updated_at = utc_now()
+            if channel.rss_failures > max_failures:
+                channel.blacklisted = True
+                channel.rss_failures = 0
+            return channel
+
+    def reset_rss_failures(self, user_id: int, channel_id: str) -> None:
+        with self.cursor() as session:
+            session.execute(
+                update(Channel)
+                .where(Channel.user_id == user_id, Channel.channel_id == channel_id, Channel.rss_failures != 0)
+                .values(rss_failures=0)
+            )
+
     def remove_channel(self, user_id: int, channel_id: str) -> None:
         with self.cursor() as session:
             session.execute(delete(ChannelTracker).where(ChannelTracker.user_id == user_id, ChannelTracker.channel_id == channel_id))

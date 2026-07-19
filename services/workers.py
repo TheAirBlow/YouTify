@@ -32,6 +32,8 @@ class UserWorkerState:
     progress: JobProgress | None = None
 
 class UserTaskManager:
+    RSS_FAILURE_BACKOFF_SECONDS = 5 * 60
+
     def __init__(self, bot: YoutifyBot):
         self.bot = bot
         self.ratelimited: bool = False
@@ -172,8 +174,9 @@ class UserTaskManager:
                         continue
 
                 if due_latest or priority_job == "full-refresh":
+                    rss_failures = 0
                     try:
-                        await self.bot.scrape_latest_videos(user_id, progress=self._progress_callback(user_id))
+                        rss_failures = await self.bot.scrape_latest_videos(user_id, progress=self._progress_callback(user_id))
                     except YouTubeQuotaExceeded:
                         self._handle_quota_exceeded()
                         continue
@@ -181,7 +184,7 @@ class UserTaskManager:
                         self.bot.logger.error("Unexpected worker error caught: %s", e, exc_info=True)
                     self._clear_progress(user_id)
 
-                    next_latest_run = loop.time() + latest_interval
+                    next_latest_run = loop.time() + latest_interval + rss_failures * self.RSS_FAILURE_BACKOFF_SECONDS
                     priority_job = None
                     self.bot.db.set_worker_schedule(user_id, next_latest_run=next_latest_run, priority_job=priority_job)
                     continue
