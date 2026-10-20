@@ -22,23 +22,24 @@ class ChannelCog(commands.GroupCog, name="channel"):
             return
 
         self.bot.db.ensure_user(interaction.user.id)
-        channel_id = parse_channel_identifier(channel)
+        await interaction.response.defer(ephemeral=True)
+
+        resolved = await self.bot.youtube.resolve_channel(channel)
+        if not resolved:
+            await interaction.followup.send(embed=error_embed("Channel not found", "Failed to fetch the specified channel."), ephemeral=True)
+            return
+
+        channel_id, title = resolved
         current = self.bot.db.get_channel(interaction.user.id, channel_id)
         if current:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=warning_embed("Already added", f"**{ensure_valid_title(current.title)}** is already added."),
                 ephemeral=True
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
-
-        result = self.bot.youtube.fetch_channel_feed(channel_id)
-        if not result:
-            await interaction.followup.send(embed=error_embed("Channel not found", f"Failed to fetch the specified channel."), ephemeral=True)
-
-        title, _ = result
-        self.bot.db.upsert_channel(interaction.user.id, channel_id, title, trackers=["user"])
+        playlist_id = self.bot.youtube.uploads_playlist_id(channel_id)
+        self.bot.db.upsert_channel(interaction.user.id, channel_id, title, playlist_id=playlist_id, trackers=["user"])
         await interaction.followup.send(
             embed=success_embed("Channel added", f"**{ensure_valid_title(title)}** was successfully added."),
             ephemeral=True

@@ -220,6 +220,7 @@ class Database:
         channel_id: str,
         title: str,
         *,
+        playlist_id: str | None = None,
         blacklisted: bool | None = None,
         last_seen_ts: str | None = None,
         trackers: Sequence[str] | None = None,
@@ -234,23 +235,26 @@ class Database:
 
             resolved_blacklisted = channel.blacklisted if channel and blacklisted is None else bool(blacklisted)
             resolved_last_seen = last_seen_ts if last_seen_ts is not None else (channel.last_seen_ts if channel else None)
+            resolved_playlist_id = playlist_id or (channel.playlist_id if channel else None) or f"UU{channel_id[2:]}"
 
             if channel:
                 channel.title = title
                 channel.blacklisted = resolved_blacklisted
+                channel.playlist_id = resolved_playlist_id
                 if resolved_last_seen is not None and (channel.last_seen_ts is None or resolved_last_seen > channel.last_seen_ts):
                     channel.last_seen_ts = resolved_last_seen
                 channel.updated_at = now
             else:
                 channel = Channel(
                     user_id=user_id, channel_id=channel_id, title=title,
+                    playlist_id=resolved_playlist_id,
                     blacklisted=resolved_blacklisted, last_seen_ts=resolved_last_seen,
                     created_at=now, updated_at=now,
                 )
                 session.add(channel)
 
             if trackers:
-                self.sync_trackers(session, user_id, {channel_id}, set(trackers))
+                self._sync_trackers(session, user_id, {channel_id}, set(trackers))
 
             return channel
 

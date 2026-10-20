@@ -226,7 +226,7 @@ class YoutifyBot(commands.Bot):
                             self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=True)
 
                         try:
-                            feed = self.youtube.fetch_playlist_items(user_id, playlist.playlist_id)
+                            feed = self.youtube.fetch_playlist_items(user_id, playlist.playlist_id, catchup, metadata.first_page)
                         except YouTubeAPIError as e:
                             if e.status == 404 or e.reason in ("playlistNotFound", "resourceNotFound"):
                                 self.db.upsert_playlist(user_id, playlist.playlist_id, playlist.title, can_access=False)
@@ -234,16 +234,19 @@ class YoutifyBot(commands.Bot):
                             raise
 
                         async for batch in async_batched(feed, 100):
-                            channel_ids: set[Channel] = set()
+                            channels_by_id: dict[str, Channel] = {}
                             last_seen: dict[str, str] = {}
 
                             for video in batch:
-                                channel_ids.add(video.channel_id)
+                                channels_by_id[video.channel_id] = Channel(
+                                    channel_id=video.channel_id,
+                                    playlist_id=self.youtube.uploads_playlist_id(video.channel_id),
+                                    title=video.channel_title or "Unknown Channel",
+                                )
                                 if catchup and (video.channel_id not in last_seen or self.youtube._is_at_or_newer(video.added_at, last_seen[video.channel_id])):
                                     last_seen[video.channel_id] = video.added_at
-                                    continue
 
-                            channels = await self.youtube.fetch_channels(user_id, list(channel_ids))
+                            channels = list(channels_by_id.values())
                             self.db.upsert_playlist_channels(user_id, playlist.playlist_id, channels, last_seen if catchup else None)
 
                         self.db.remove_orphaned_playlist_channels(user_id, playlist.playlist_id, cutoff)
@@ -288,10 +291,11 @@ class YoutifyBot(commands.Bot):
                     self.logger.debug("Skipping channel %s (%s) since last seen is null", channel.title, channel.channel_id)
                 else:
                     try:
-                        title, videos = await self.youtube.fetch_channel_videos(channel, after=channel.last_seen_ts)
+                        title, videos = await self.youtube.fetch_channel_uploads(channel.channel_id, after=channel.last_seen_ts)
+                        title = title or channel.title
 
                         total_videos = 0
-                        async for video in videos:
+                        for video in videos:
                             total_videos += 1
                             if self.youtube._is_newer(video.published_at, channel.last_seen_ts):
                                 self.logger.debug(
@@ -313,17 +317,17 @@ class YoutifyBot(commands.Bot):
                     except YouTubeAPIError as e:
                         if e.status == 401:
                             await self.handle_deauth(user_id)
-                        elif e.source == "rss":
+                        elif e.source == "innertube":
                             rss_failure_count += 1
                             updated = self.db.record_rss_failure(user_id, channel.channel_id, channel.title, self.RSS_MAX_FAILURES)
                             if updated.blacklisted:
                                 self.logger.warning(
-                                    "Channel %s (%s) blacklisted after %d consecutive RSS failures for user %s: %s",
+                                    "Channel %s (%s) blacklisted after %d consecutive scrape failures for user %s: %s",
                                     channel.title, channel.channel_id, self.RSS_MAX_FAILURES, user_id, e
                                 )
                             else:
                                 self.logger.debug(
-                                    "RSS fetch failed for channel %s (%s), failure #%d for user %s: %s",
+                                    "Scrape failed for channel %s (%s), failure #%d for user %s: %s",
                                     channel.title, channel.channel_id, updated.rss_failures, user_id, e
                                 )
                         else:
